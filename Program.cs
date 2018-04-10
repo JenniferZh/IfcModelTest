@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 using Xbim.Common;
 using Xbim.Common.Metadata;
 using Xbim.Ifc;
-using Xbim.Ifc4.Interfaces; //IFC4 interfaces are also implemented in our IFC2x3 schema implementation
+using Xbim.Ifc4.Interfaces;
 using Newtonsoft.Json;
 using System.IO;
 
@@ -57,7 +57,7 @@ namespace BasicExamples
             return model.Instances.FirstOrDefault<IIfcDoor>(d => d.GlobalId == id);
         }
 
-        public IPersistEntity getone(int id)
+        public IPersistEntity getOne(int id)
         {
             return model.Instances[id];
         }
