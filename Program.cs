@@ -11,6 +11,9 @@ using Xbim.Ifc4.Interfaces;
 using Newtonsoft.Json;
 using System.IO;
 
+using Xbim.ModelGeometry.Scene;
+using Xbim.Common.Geometry;
+
 namespace BasicExamples
 {
     class PropertyItem
@@ -32,71 +35,139 @@ namespace BasicExamples
         public int LABEL { get; set; }
 
         private SortedDictionary<string, string> _properties = new SortedDictionary<string, string>();
-        public SortedDictionary<string, string> properties { get {return _properties; } }
-        
+        public SortedDictionary<string, string> properties { get { return _properties; } }
+        public String AABB { get; set; }
+    }
+
+    class IFCFile
+    {
+        public List<Entity> Elements { get; set; }
+        public SortedDictionary<string, SortedDictionary<int, List<int>>> Rels { get; set;}
     }
 
 
-    class QuickStart
+    class PropertyExtract
     {
 
         IfcStore model;
+        Xbim3DModelContext context;
 
-        public QuickStart(string fileName)
+
+        public PropertyExtract(IfcStore _model, Xbim3DModelContext _context)
         {
-            model = IfcStore.Open(fileName);
+            model = _model;
+            context = _context;
         }
 
-        public IEnumerable<IIfcDoor> getAllDoors()
+        /// <summary>
+        /// 获取一个ifcproduct的boundingbox
+        /// </summary>
+        /// <param name="product">指定的product</param>
+        /// <returns>XbimRect3D精度为2位的盒子</returns>
+        public XbimRect3D GetAABB(IIfcProduct product)
         {
-            return model.Instances.OfType<IIfcDoor>();
-        }
+            //Xbim3DModelContext context = new Xbim3DModelContext(model);
+            //context.CreateContext();
+            XbimRect3D prodBox = XbimRect3D.Empty;
 
-        public IIfcDoor getDoorById(string id)
-        {
-            return model.Instances.FirstOrDefault<IIfcDoor>(d => d.GlobalId == id);
-        }
+            if (context.ShapeInstancesOf(product).Count() == 0)
+                return prodBox;
 
-        public IPersistEntity getOne(int id)
-        {
-            return model.Instances[id];
-        }
-
-        public static void Main()
-        {
-            string path = Directory.GetParent(Directory.GetCurrentDirectory()).Parent.FullName;
-            string fileName = path+"//test.ifc"; //this can be either IFC2x3 or IFC4
-            QuickStart start = new QuickStart(fileName);
-            
+            foreach (var shp in context.ShapeInstancesOf(product))
             {
-                //get all doors in the model (using IFC4 interface of IfcDoor this will work both for IFC2x3 and IFC4)
-                //var allDoors = model.Instances.OfType<IIfcProduct>();
-
-                //foreach(var door in allDoors)
-                //{
-                //    Entity tmp = start.getBasicInfo(door, model);
-                //    string json = JsonConvert.SerializeObject(tmp);
-                //    Console.WriteLine(json);
-                //}
-
-                //get only doors with defined IIfcTypeObject
-                
-
-                //get one single door
-                var id = "1Oms875aH3Wg$9l65H2ZGw";
-                var theDoor = start.getDoorById(id);
-                
-
-
-
-                string json = JsonConvert.SerializeObject(start.getBasicInfo(theDoor));
-                Console.WriteLine(json);
-
-
-                Console.ReadKey();
+                var bb = shp.BoundingBox;
+                bb = XbimRect3D.TransformBy(bb, shp.Transformation);
+                if (prodBox.IsEmpty) prodBox = bb;
+                else prodBox.Union(bb);
             }
 
+            //精度为2位小数
+            prodBox.Round(2);
+            return prodBox;
+            //Console.WriteLine(prodBox.ToString());
 
+        }
+
+        /// <summary>
+        /// 获取整个文件的属性信息
+        /// </summary>
+        /// <returns>IFCFile</returns>
+        public IFCFile getAllIfcProperty()
+        {
+            var products = model.Instances.OfType<IIfcProduct>();
+            IFCFile ifc = new IFCFile();
+            List<Entity> productList = new List<Entity>();
+            foreach (var product in products)
+            {
+                productList.Add(getBasicInfo(product));
+            }
+            ifc.Elements = productList;
+
+            SortedDictionary<string, SortedDictionary<int, List<int>>> rels = new SortedDictionary<string, SortedDictionary<int, List<int>>>();
+            SortedDictionary<int, List<int>> rels_contain = GetRelContains();
+            rels.Add("isContaining", rels_contain);
+            ifc.Rels = rels;
+            return ifc;
+        }
+
+        public SortedDictionary<int, List<int>> GetRelContains()
+        {
+            SortedDictionary<int, List<int>> containing = new SortedDictionary<int, List<int>>();
+
+            var containEntities = new List<IPersistEntity>();
+            containEntities.Add(model.Instances[493064]);
+
+
+            foreach (var entity in containEntities)
+            {
+                ObservableCollection<PropertyItem> properties = new ObservableCollection<PropertyItem>();
+                FillObjectData(entity, properties);
+                int relating = 0;
+                List<int> related = new List<int>();
+                foreach (var prop in properties)
+                {
+
+                    //属性对应的IFCLABEL=0，代表这个属性是EXPRESS中的一个直接用text或者number就可以表示的一种属性
+                    if (prop.IfcLabel != 0)
+                    {
+                        if (prop.Name == "RelatingStructure")
+                        {
+                            relating = prop.IfcLabel;
+                        }
+                        //注意，这里是观察得到的，name和value都是被包含的实体的IFCTYPE
+                        if (prop.Name == prop.Value || prop.Name == "RelatedElements (∞)")
+                        {
+                            related.Add(prop.IfcLabel);
+                        }
+
+                    }
+
+                    Console.WriteLine(prop.Name+" "+ prop.Value+" "+ prop.IfcLabel);
+
+                }
+                containing.Add(relating, related);
+            }
+            //Console.WriteLine(containing);
+
+            return containing;
+        }
+
+
+        static void Main()
+        {
+            string path = Directory.GetParent(Directory.GetCurrentDirectory()).Parent.FullName;
+            string fileName = path + "//qhzf.ifc"; //this can be either IFC2x3 or IFC4
+
+            IfcStore model = IfcStore.Open(fileName);
+            var context = new Xbim3DModelContext(model);
+            context.CreateContext();
+
+            PropertyExtract start = new PropertyExtract(model, context);
+
+            string properties = JsonConvert.SerializeObject(start.GetRelContains());
+            //start.GetRelContains();
+            Console.WriteLine(properties);
+            Console.ReadKey();
         }
 
         /// <summary>
@@ -120,17 +191,18 @@ namespace BasicExamples
                 {
                     //属性对应的IFCLABEL=0，代表这个属性是EXPRESS中的一个直接用text或者number就可以表示的一种属性
                     //并不是一个引用
-                    if(prop.IfcLabel == 0)
+                    if (prop.IfcLabel == 0)
                     {
                         newEntity.properties.Add(prop.Name, prop.Value);
                     }
                     //专门处理几何信息
-                    if(prop.Value == "IfcProductDefinitionShape")
+                    if (prop.Value == "IfcProductDefinitionShape")
                     {
-                        var value = string.Join(",",getRepresentation(prop.IfcLabel));
+                        var value = string.Join(",", getRepresentation(prop.IfcLabel));
                         newEntity.properties.Add(prop.Name, value);
                     }
                 }
+
 
                 //Console.WriteLine(prop.Name + " " + prop.Value+ " "+ prop.IfcLabel);
             }
@@ -139,14 +211,18 @@ namespace BasicExamples
             FillPropertyData(entity, properties2);
             foreach (var prop in properties2)
             {
-                if(!newEntity.properties.ContainsKey(prop.Name))
+                if (!newEntity.properties.ContainsKey(prop.Name))
                     newEntity.properties.Add(prop.Name, prop.Value);
                 //Console.WriteLine(prop.Name + " " + prop.Value + " " + prop.IfcLabel);
             }
 
+            var toproduct = entity as IIfcProduct;
+            XbimRect3D AABB = GetAABB(toproduct);
+            if (AABB.IsEmpty) newEntity.AABB = "";
+            else newEntity.AABB = AABB.ToString();
 
             return newEntity;
-            
+
         }
 
         //输入模型和ifcproductdefinitionshape的label，返回几何表达方法
@@ -156,7 +232,7 @@ namespace BasicExamples
             HashSet<string> reps = new HashSet<string>();
             IIfcProductDefinitionShape shape = (IIfcProductDefinitionShape)model.Instances[label];
             var representations = shape.Representations;
-            foreach(var item in representations)
+            foreach (var item in representations)
             {
                 reps.Add(item.RepresentationType);
                 //Console.WriteLine("look!"+item.RepresentationType);
@@ -164,7 +240,7 @@ namespace BasicExamples
             return reps;
         }
 
-        //这里主要处理关于EXPRESSTYPE的
+        //FillOjbectData,GetPropItem, ReportProperty主要处理关于EXPRESSTYPE的属性
         private void FillObjectData(IPersistEntity _entity, ObservableCollection<PropertyItem> _objectProperties)
         {
             if (_objectProperties.Count > 0)
@@ -189,7 +265,6 @@ namespace BasicExamples
 
         }
 
-
         private PropertyItem GetPropItem(object propVal)
         {
             var retItem = new PropertyItem();
@@ -212,7 +287,7 @@ namespace BasicExamples
             return retItem;
         }
 
-        private void ReportProp(IPersistEntity entity, ExpressMetaProperty prop, bool verbose, ObservableCollection<PropertyItem>  _objectProperties)
+        private void ReportProp(IPersistEntity entity, ExpressMetaProperty prop, bool verbose, ObservableCollection<PropertyItem> _objectProperties)
         {
             var propVal = prop.PropertyInfo.GetValue(entity, null);
             if (propVal == null)
@@ -270,7 +345,7 @@ namespace BasicExamples
             }
         }
 
-        //这里主要处理关于propertyset的
+        //FillPropertyData, AddPropertySet, AddProperty主要处理关于propertyset的属性
         private void FillPropertyData(IPersistEntity _entity, ObservableCollection<PropertyItem> _properties)
         {
             if (_properties.Any()) //don't try to fill unless empty
